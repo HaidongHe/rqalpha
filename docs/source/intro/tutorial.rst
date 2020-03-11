@@ -22,19 +22,19 @@
 *   起始资金
 *   Benchmark
 
-假如我们的策略存放在了 :code:`./rqalpha/examples/buy_and_hold.py` 路径下， 数据源存放在 :code:`./rqalpha/bundle/` 路径下，回测的起始时间为 :code:`2016-06-01`, 结束时间为 :code:`2016-12-01`，我们给策略分配的起始资金为 :code:`100000`, Benchmark 设置为 :code:`000300.XSHG`
+假如我们的策略存放在了 :code:`./rqalpha/examples/buy_and_hold.py` 路径下，回测的起始时间为 :code:`2016-06-01`, 结束时间为 :code:`2016-12-01`，我们给策略分配的起始资金为 :code:`100000`, Benchmark 设置为 :code:`000300.XSHG`
 
 那么我们通过如下命令来运行回测
 
 ..  code-block:: bash
 
-    rqalpha run -f ./rqalpha/examples/buy_and_hold.py -d ./rqalpha/bundle/ -s 2016-06-01 -e 2016-12-01 --account stock 100000 --benchmark 000300.XSHG
+    rqalpha run -f ./rqalpha/examples/buy_and_hold.py -s 2016-06-01 -e 2016-12-01 --account stock 100000 --benchmark 000300.XSHG
 
 如果我们想要以图形的方式查看回测的结果， 则增加 :code:`--plot` 参数
 
 ..  code-block:: bash
 
-    rqalpha run -f ./rqalpha/examples/buy_and_hold.py -d ./rqalpha/bundle/ -s 2016-06-01 -e 2016-12-01 --account stock 100000 --benchmark 000300.XSHG --plot
+    rqalpha run -f ./rqalpha/examples/buy_and_hold.py -s 2016-06-01 -e 2016-12-01 --account stock 100000 --benchmark 000300.XSHG --plot
 
 .. image:: https://raw.githubusercontent.com/ricequant/rq-resource/master/rqalpha/buy_and_hold.png
 
@@ -42,7 +42,7 @@
 
 ..  code-block:: bash
 
-    rqalpha run -f ./rqalpha/examples/buy_and_hold.py -d ./rqalpha/bundle/ -s 2016-06-01 -e 2016-12-01 --account stock 100000 --benchmark 000300.XSHG --plot -o result.pkl
+    rqalpha run -f ./rqalpha/examples/buy_and_hold.py -s 2016-06-01 -e 2016-12-01 --account stock 100000 --benchmark 000300.XSHG --plot -o result.pkl
 
 
 等回测结束后可以通过 :code:`pandas.read_pickle` 函数来读取数据进行之后的数据分析。
@@ -190,7 +190,7 @@ Ricequant 金融、财务、合约历史数据等数据接口请查看 :ref:`api
     *   :func:`order_target_percent`: 【股票专用】按照目标比例下单
     *   :func:`buy_open`: 【期货专用】买开
     *   :func:`sell_close`:【期货专用】 平买仓
-    *   :func:`sell_opem`: 【期货专用】卖开
+    *   :func:`sell_open`: 【期货专用】卖开
     *   :func:`buy_close`: 【期货专用】平卖仓
     *   :func:`cancel_order`: 撤单
     *   :func:`get_open_orders`: 获取未成交订单数据

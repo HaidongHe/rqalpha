@@ -1,31 +1,27 @@
 # -*- coding: utf-8 -*-
+# 版权所有 2019 深圳米筐科技有限公司（下称“米筐科技”）
 #
-# Copyright 2017 Ricequant, Inc
+# 除非遵守当前许可，否则不得使用本软件。
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+#     * 非商业用途（非商业用途指个人出于非商业目的使用本软件，或者高校、研究所等非营利机构出于教育、科研等目的使用本软件）：
+#         遵守 Apache License 2.0（下称“Apache 2.0 许可”），您可以在以下位置获得 Apache 2.0 许可的副本：http://www.apache.org/licenses/LICENSE-2.0。
+#         除非法律有要求或以书面形式达成协议，否则本软件分发时需保持当前许可“原样”不变，且不得附加任何条件。
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+#     * 商业用途（商业用途指个人出于任何商业目的使用本软件，或者法人或其他组织出于任何目的使用本软件）：
+#         未经米筐科技授权，任何个人不得出于任何商业目的使用本软件（包括但不限于向第三方提供、销售、出租、出借、转让本软件、本软件的衍生产品、引用或借鉴了本软件功能或源代码的产品或服务），任何法人或其他组织不得出于任何目的使用本软件，否则米筐科技有权追究相应的知识产权侵权责任。
+#         在此前提下，对本软件的使用同样需要遵守 Apache 2.0 许可，Apache 2.0 许可与本许可冲突之处，以本许可为准。
+#         详细的授权流程，请联系 public@ricequant.com 获取。
 
 import six
 
-from .api_base import decorate_api_exc, instruments, cal_style
-from ..environment import Environment
-from ..utils.arg_checker import apply_rules, verify_that
-# noinspection PyUnresolvedReferences
-from ..model.order import LimitOrder, MarketOrder, Order
+from rqalpha.api.api_base import decorate_api_exc, instruments, cal_style
+from rqalpha.environment import Environment
+from rqalpha.utils.arg_checker import apply_rules, verify_that, verify_env
 
-__all__ = [
-    'order',
-    'order_to'
-]
+# noinspection PyUnresolvedReferences
+from rqalpha.model.order import LimitOrder, MarketOrder, Order
+
+__all__ = ["order", "order_to"]
 
 
 def export_as_api(func):
@@ -36,6 +32,7 @@ def export_as_api(func):
     return func
 
 
+@export_as_api
 def symbol(order_book_id, split=", "):
     if isinstance(order_book_id, six.string_types):
         return "{}[{}]".format(order_book_id, instruments(order_book_id).symbol)
@@ -49,7 +46,7 @@ def now_time_str(str_format="%H:%M:%S"):
 
 
 @export_as_api
-@apply_rules(verify_that('quantity').is_number())
+@apply_rules(verify_that("quantity").is_number())
 def order(order_book_id, quantity, price=None, style=None):
     """
     全品种通用智能调仓函数
@@ -83,7 +80,7 @@ def order(order_book_id, quantity, price=None, style=None):
 
         # 当前仓位为0
         # RB1710 多方向调仓2手：调整后变为 BUY 2手
-        order('RB1710'， 2)
+        order('RB1710', 2)
 
         # RB1710 空方向调仓3手：先平多方向2手 在开空方向1手，调整后变为 SELL 1手
         order('RB1710', -3)
@@ -98,7 +95,7 @@ def order(order_book_id, quantity, price=None, style=None):
 
 
 @export_as_api
-@apply_rules(verify_that('quantity').is_number())
+@apply_rules(verify_that("quantity").is_number())
 def order_to(order_book_id, quantity, price=None, style=None):
     """
     全品种通用智能调仓函数
@@ -135,11 +132,13 @@ def order_to(order_book_id, quantity, price=None, style=None):
         order_to('RB1710', 2)
 
         # RB1710 调仓至 SELL 1手
-        order_to('RB1710'， -1)
+        order_to('RB1710', -1)
 
     """
     style = cal_style(price, style)
-    orders = Environment.get_instance().portfolio.order(order_book_id, quantity, style, target=True)
+    orders = Environment.get_instance().portfolio.order(
+        order_book_id, quantity, style, target=True
+    )
 
     if isinstance(orders, Order):
         return [orders]

@@ -1,31 +1,30 @@
 # -*- coding: utf-8 -*-
+# 版权所有 2019 深圳米筐科技有限公司（下称“米筐科技”）
 #
-# Copyright 2017 Ricequant, Inc
+# 除非遵守当前许可，否则不得使用本软件。
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+#     * 非商业用途（非商业用途指个人出于非商业目的使用本软件，或者高校、研究所等非营利机构出于教育、科研等目的使用本软件）：
+#         遵守 Apache License 2.0（下称“Apache 2.0 许可”），您可以在以下位置获得 Apache 2.0 许可的副本：http://www.apache.org/licenses/LICENSE-2.0。
+#         除非法律有要求或以书面形式达成协议，否则本软件分发时需保持当前许可“原样”不变，且不得附加任何条件。
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+#     * 商业用途（商业用途指个人出于任何商业目的使用本软件，或者法人或其他组织出于任何目的使用本软件）：
+#         未经米筐科技授权，任何个人不得出于任何商业目的使用本软件（包括但不限于向第三方提供、销售、出租、出借、转让本软件、本软件的衍生产品、引用或借鉴了本软件功能或源代码的产品或服务），任何法人或其他组织不得出于任何目的使用本软件，否则米筐科技有权追究相应的知识产权侵权责任。
+#         在此前提下，对本软件的使用同样需要遵守 Apache 2.0 许可，Apache 2.0 许可与本许可冲突之处，以本许可为准。
+#         详细的授权流程，请联系 public@ricequant.com 获取。
 
 from decimal import Decimal, getcontext
 
 import six
 import numpy as np
 
-from rqalpha.api.api_base import decorate_api_exc, instruments, cal_style
-from rqalpha.const import DEFAULT_ACCOUNT_TYPE, EXECUTION_PHASE, SIDE, ORDER_TYPE
+from rqalpha.api.api_base import decorate_api_exc, instruments, cal_style, register_api
+from rqalpha.const import DEFAULT_ACCOUNT_TYPE, EXECUTION_PHASE, SIDE, ORDER_TYPE, POSITION_EFFECT, FRONT_VALIDATOR_TYPE
 from rqalpha.environment import Environment
 from rqalpha.execution_context import ExecutionContext
 from rqalpha.model.instrument import Instrument
-from rqalpha.model.order import Order, OrderStyle, MarketOrder, LimitOrder
-from rqalpha.utils.arg_checker import apply_rules, verify_that
+from rqalpha.model.order import Order, MarketOrder, LimitOrder
+from rqalpha.utils import is_valid_price
+from rqalpha.utils.arg_checker import apply_rules, verify_that, verify_env
 # noinspection PyUnresolvedReferences
 from rqalpha.utils.exception import patch_user_exc, RQInvalidArgument
 from rqalpha.utils.i18n import gettext as _
@@ -45,6 +44,9 @@ __all__ = [
 ]
 
 
+register_api("scheduler", scheduler)
+
+
 def export_as_api(func):
     __all__.append(func.__name__)
 
@@ -56,13 +58,14 @@ def export_as_api(func):
 @export_as_api
 @ExecutionContext.enforce_phase(EXECUTION_PHASE.ON_BAR,
                                 EXECUTION_PHASE.ON_TICK,
-                                EXECUTION_PHASE.SCHEDULED)
+                                EXECUTION_PHASE.SCHEDULED,
+                                EXECUTION_PHASE.GLOBAL)
 @apply_rules(verify_that('id_or_ins').is_valid_stock(),
              verify_that('amount').is_number(),
              verify_that('style').is_instance_of((MarketOrder, LimitOrder, type(None))))
 def order_shares(id_or_ins, amount, price=None, style=None):
     """
-    落指定股数的买/卖单，最常见的落单方式之一。如有需要落单类型当做一个参量传入，如果忽略掉落单类型，那么默认是市价单（market order）。
+    指定股数的买/卖单，最常见的落单方式之一。如有需要落单类型当做一个参量传入，如果忽略掉落单类型，那么默认是市价单（market order）。
 
     :param id_or_ins: 下单标的物
     :type id_or_ins: :class:`~Instrument` object | `str`
@@ -74,7 +77,7 @@ def order_shares(id_or_ins, amount, price=None, style=None):
     :param style: 下单类型, 默认是市价单。目前支持的订单类型有 :class:`~LimitOrder` 和 :class:`~MarketOrder`
     :type style: `OrderStyle` object
 
-    :return: :class:`~Order` object
+    :return: :class:`~Order` object | None
 
     :example:
 
@@ -89,67 +92,82 @@ def order_shares(id_or_ins, amount, price=None, style=None):
     """
     if amount == 0:
         # 如果下单量为0，则认为其并没有发单，则直接返回None
+        user_system_log.warn(_(u"Order Creation Failed: Order amount is 0."))
         return None
     style = cal_style(price, style)
     if isinstance(style, LimitOrder):
         if style.get_limit_price() <= 0:
             raise RQInvalidArgument(_(u"Limit order price should be positive"))
     order_book_id = assure_stock_order_book_id(id_or_ins)
+    auto_switch_order_value = Environment.get_instance().config.mod.sys_accounts.auto_switch_order_value
+    return _order_shares(order_book_id, amount, style, auto_switch_order_value)
+
+
+def _order_shares(order_book_id, amount, style, auto_switch_order_value):
     env = Environment.get_instance()
 
     price = env.get_last_price(order_book_id)
-    if np.isnan(price):
+    if not is_valid_price(price):
         user_system_log.warn(
             _(u"Order Creation Failed: [{order_book_id}] No market data").format(order_book_id=order_book_id))
         return
 
     if amount > 0:
         side = SIDE.BUY
+        position_effect = POSITION_EFFECT.OPEN
     else:
         amount = abs(amount)
         side = SIDE.SELL
+        position_effect = POSITION_EFFECT.CLOSE
 
-    round_lot = int(env.get_instrument(order_book_id).round_lot)
+    if side == SIDE.BUY:
+        # 卖出不再限制 round_lot, order_shares 不再依赖 portfolio
+        round_lot = int(env.get_instrument(order_book_id).round_lot)
+        try:
+            amount = int(Decimal(amount) / Decimal(round_lot)) * round_lot
+        except ValueError:
+            amount = 0
 
-    try:
-        amount = int(Decimal(amount) / Decimal(round_lot)) * round_lot
-    except ValueError:
-        amount = 0
-
-    r_order = Order.__from_create__(order_book_id, amount, side, style, None)
-
-    if price == 0:
-        user_system_log.warn(
-            _(u"Order Creation Failed: [{order_book_id}] No market data").format(order_book_id=order_book_id))
-        r_order.mark_rejected(
-            _(u"Order Creation Failed: [{order_book_id}] No market data").format(order_book_id=order_book_id))
-        return r_order
+    r_order = Order.__from_create__(order_book_id, amount, side, style, position_effect)
 
     if amount == 0:
         # 如果计算出来的下单量为0, 则不生成Order, 直接返回None
         # 因为很多策略会直接在handle_bar里面执行order_target_percent之类的函数，经常会出现下一个量为0的订单，如果这些订单都生成是没有意义的。
-        r_order.mark_rejected(_(u"Order Creation Failed: 0 order quantity"))
-        return r_order
+        user_system_log.warn(_(u"Order Creation Failed: 0 order quantity"))
+        return
     if r_order.type == ORDER_TYPE.MARKET:
         r_order.set_frozen_price(price)
-    if env.can_submit_order(r_order):
-        env.broker.submit_order(r_order)
 
-    return r_order
+    reject_validator_type = env.validate_order_submission(r_order)
+    if not reject_validator_type:
+        env.broker.submit_order(r_order)
+        return r_order
+    else:
+        if auto_switch_order_value and reject_validator_type == FRONT_VALIDATOR_TYPE.CASH:
+            remaining_cash = env.portfolio.accounts[DEFAULT_ACCOUNT_TYPE.STOCK.name].cash
+            user_system_log.warn(_(
+                "Insufficient cash, use all remaining cash({}) to create order").format(remaining_cash)
+            )
+            return _order_value(order_book_id, remaining_cash, style)
 
 
 def _sell_all_stock(order_book_id, amount, style):
     env = Environment.get_instance()
-    order = Order.__from_create__(order_book_id, amount, SIDE.SELL, style, None)
+    order = Order.__from_create__(order_book_id, amount, SIDE.SELL, style, POSITION_EFFECT.CLOSE)
+    if amount == 0:
+        user_system_log.warn(_(u"Order Creation Failed: 0 order quantity"))
+        return
+
     if env.can_submit_order(order):
         env.broker.submit_order(order)
-    return order
+        return order
 
 
 @export_as_api
 @ExecutionContext.enforce_phase(EXECUTION_PHASE.ON_BAR,
                                 EXECUTION_PHASE.ON_TICK,
-                                EXECUTION_PHASE.SCHEDULED)
+                                EXECUTION_PHASE.SCHEDULED,
+                                EXECUTION_PHASE.GLOBAL)
 @apply_rules(verify_that('id_or_ins').is_valid_stock(),
              verify_that('amount').is_number(),
              verify_that('style').is_instance_of((MarketOrder, LimitOrder, type(None))))
@@ -167,7 +185,7 @@ def order_lots(id_or_ins, amount, price=None, style=None):
     :param style: 下单类型, 默认是市价单。目前支持的订单类型有 :class:`~LimitOrder` 和 :class:`~MarketOrder`
     :type style: `OrderStyle` object
 
-    :return: :class:`~Order` object
+    :return: :class:`~Order` object | None
 
     :example:
 
@@ -191,13 +209,18 @@ def order_lots(id_or_ins, amount, price=None, style=None):
 @export_as_api
 @ExecutionContext.enforce_phase(EXECUTION_PHASE.ON_BAR,
                                 EXECUTION_PHASE.ON_TICK,
-                                EXECUTION_PHASE.SCHEDULED)
+                                EXECUTION_PHASE.SCHEDULED,
+                                EXECUTION_PHASE.GLOBAL)
 @apply_rules(verify_that('id_or_ins').is_valid_stock(),
              verify_that('cash_amount').is_number(),
              verify_that('style').is_instance_of((MarketOrder, LimitOrder, type(None))))
 def order_value(id_or_ins, cash_amount, price=None, style=None):
     """
-    使用想要花费的金钱买入/卖出股票，而不是买入/卖出想要的股数，正数代表买入，负数代表卖出。股票的股数总是会被调整成对应的100的倍数（在A中国A股市场1手是100股）。当您提交一个卖单时，该方法代表的意义是您希望通过卖出该股票套现的金额。如果金额超出了您所持有股票的价值，那么您将卖出所有股票。需要注意，如果资金不足，该API将不会创建发送订单。
+    使用想要花费的金钱买入/卖出股票，而不是买入/卖出想要的股数，正数代表买入，负数代表卖出。股票的股数总是会被调整成对应的100的倍数（在A中国A股市场1手是100股）。如果资金不足，该API将不会创建发送订单。
+
+    需要注意：
+    当您提交一个买单时，cash_amount 代表的含义是您希望买入股票消耗的金额（包含税费），最终买入的股数不仅和发单的价格有关，还和税费相关的参数设置有关。
+    当您提交一个卖单时，cash_amount 代表的意义是您希望卖出股票的总价值。如果金额超出了您所持有股票的价值，那么您将卖出所有股票。
 
     :param id_or_ins: 下单标的物
     :type id_or_ins: :class:`~Instrument` object | `str`
@@ -209,13 +232,13 @@ def order_value(id_or_ins, cash_amount, price=None, style=None):
     :param style: 下单类型, 默认是市价单。目前支持的订单类型有 :class:`~LimitOrder` 和 :class:`~MarketOrder`
     :type style: `OrderStyle` object
 
-    :return: :class:`~Order` object
+    :return: :class:`~Order` object | None
 
     :example:
 
     .. code-block:: python
 
-        #买入价值￥10000的平安银行股票，并以市价单发送。如果现在平安银行股票的价格是￥7.5，那么下面的代码会买入1300股的平安银行，因为少于100股的数目将会被自动删除掉：
+        #花费最多￥10000买入平安银行股票，并以市价单发送。具体下单的数量与您策略税费相关的配置有关。
         order_value('000001.XSHE', 10000)
         #卖出价值￥10000的现在持有的平安银行：
         order_value('000001.XSHE', -10000)
@@ -229,27 +252,42 @@ def order_value(id_or_ins, cash_amount, price=None, style=None):
             raise RQInvalidArgument(_(u"Limit order price should be positive"))
 
     order_book_id = assure_stock_order_book_id(id_or_ins)
+    return _order_value(order_book_id, cash_amount, style)
+
+
+def _order_value(order_book_id, cash_amount, style):
     env = Environment.get_instance()
 
     price = env.get_last_price(order_book_id)
-    if np.isnan(price):
+    if not is_valid_price(price):
         user_system_log.warn(
             _(u"Order Creation Failed: [{order_book_id}] No market data").format(order_book_id=order_book_id))
         return
 
-    if price == 0:
-        return order_shares(order_book_id, 0, style)
-
     account = env.portfolio.accounts[DEFAULT_ACCOUNT_TYPE.STOCK.name]
-    round_lot = int(env.get_instrument(order_book_id).round_lot)
 
     if cash_amount > 0:
         cash_amount = min(cash_amount, account.cash)
 
-    if isinstance(style, MarketOrder):
-        amount = int(Decimal(cash_amount) / Decimal(price) / Decimal(round_lot)) * round_lot
-    else:
-        amount = int(Decimal(cash_amount) / Decimal(style.get_limit_price()) / Decimal(round_lot)) * round_lot
+    price = price if isinstance(style, MarketOrder) else style.get_limit_price()
+    amount = int(Decimal(cash_amount) / Decimal(price))
+
+    if cash_amount > 0:
+        round_lot = int(env.get_instrument(order_book_id).round_lot)
+
+        # FIXME: logic duplicate with order_shares
+        amount = int(Decimal(amount) / Decimal(round_lot)) * round_lot
+
+        while amount > 0:
+            dummy_order = Order.__from_create__(order_book_id, amount, SIDE.BUY, LimitOrder(price),
+                                                POSITION_EFFECT.OPEN)
+            expected_transaction_cost = env.get_order_transaction_cost(DEFAULT_ACCOUNT_TYPE.STOCK, dummy_order)
+            if amount * price + expected_transaction_cost <= cash_amount:
+                break
+            amount -= round_lot
+        else:
+            user_system_log.warn(_(u"Order Creation Failed: 0 order quantity"))
+            return
 
     # if the cash_amount is larger than you current security’s position,
     # then it will sell all shares of this security.
@@ -257,19 +295,24 @@ def order_value(id_or_ins, cash_amount, price=None, style=None):
     position = account.positions[order_book_id]
     amount = downsize_amount(amount, position)
 
-    return order_shares(order_book_id, amount, style=style)
+    return _order_shares(order_book_id, amount, style, auto_switch_order_value=False)
 
 
 @export_as_api
 @ExecutionContext.enforce_phase(EXECUTION_PHASE.ON_BAR,
                                 EXECUTION_PHASE.ON_TICK,
-                                EXECUTION_PHASE.SCHEDULED)
+                                EXECUTION_PHASE.SCHEDULED,
+                                EXECUTION_PHASE.GLOBAL)
 @apply_rules(verify_that('id_or_ins').is_valid_stock(),
              verify_that('percent').is_number().is_greater_or_equal_than(-1).is_less_or_equal_than(1),
              verify_that('style').is_instance_of((MarketOrder, LimitOrder, type(None))))
 def order_percent(id_or_ins, percent, price=None, style=None):
     """
-    发送一个等于目前投资组合价值（市场价值和目前现金的总和）一定百分比的买/卖单，正数代表买，负数代表卖。股票的股数总是会被调整成对应的一手的股票数的倍数（1手是100股）。百分比是一个小数，并且小于或等于1（<=100%），0.5表示的是50%.需要注意，如果资金不足，该API将不会创建发送订单。
+    发送一个花费价值等于目前投资组合（市场价值和目前现金的总和）一定百分比现金的买/卖单，正数代表买，负数代表卖。股票的股数总是会被调整成对应的一手的股票数的倍数（1手是100股）。百分比是一个小数，并且小于或等于1（<=100%），0.5表示的是50%.需要注意，如果资金不足，该API将不会创建发送订单。
+
+    需要注意：
+    发送买单时，percent 代表的是期望买入股票消耗的金额（包含税费）占投资组合总权益的比例。
+    发送卖单时，percent 代表的是期望卖出的股票总价值占投资组合总权益的比例。
 
     :param id_or_ins: 下单标的物
     :type id_or_ins: :class:`~Instrument` object | `str`
@@ -281,13 +324,13 @@ def order_percent(id_or_ins, percent, price=None, style=None):
     :param style: 下单类型, 默认是市价单。目前支持的订单类型有 :class:`~LimitOrder` 和 :class:`~MarketOrder`
     :type style: `OrderStyle` object
 
-    :return: :class:`~Order` object
+    :return: :class:`~Order` object | None
 
     :example:
 
     .. code-block:: python
 
-        #买入等于现有投资组合50%价值的平安银行股票。如果现在平安银行的股价是￥10/股并且现在的投资组合总价值是￥2000，那么将会买入200股的平安银行股票。（不包含交易成本和滑点的损失）：
+        #花费等于现有投资组合50%价值的现金买入平安银行股票：
         order_percent('000001.XSHG', 0.5)
     """
     if percent < -1 or percent > 1:
@@ -301,13 +344,18 @@ def order_percent(id_or_ins, percent, price=None, style=None):
 @export_as_api
 @ExecutionContext.enforce_phase(EXECUTION_PHASE.ON_BAR,
                                 EXECUTION_PHASE.ON_TICK,
-                                EXECUTION_PHASE.SCHEDULED)
+                                EXECUTION_PHASE.SCHEDULED,
+                                EXECUTION_PHASE.GLOBAL)
 @apply_rules(verify_that('id_or_ins').is_valid_stock(),
              verify_that('cash_amount').is_number(),
              verify_that('style').is_instance_of((MarketOrder, LimitOrder, type(None))))
 def order_target_value(id_or_ins, cash_amount, price=None, style=None):
     """
-    买入/卖出并且自动调整该证券的仓位到一个目标价值。如果还没有任何该证券的仓位，那么会买入全部目标价值的证券。如果已经有了该证券的仓位，则会买入/卖出调整该证券的现在仓位和目标仓位的价值差值的数目的证券。需要注意，如果资金不足，该API将不会创建发送订单。
+    买入/卖出并且自动调整该证券的仓位到一个目标价值。
+    加仓时，cash_amount 代表现有持仓的价值加上即将花费（包含税费）的现金的总价值。
+    减仓时，cash_amount 代表调整仓位的目标价至。
+
+    需要注意，如果资金不足，该API将不会创建发送订单。
 
     :param id_or_ins: 下单标的物
     :type id_or_ins: :class:`~Instrument` object | `str` | List[:class:`~Instrument`] | List[`str`]
@@ -319,13 +367,13 @@ def order_target_value(id_or_ins, cash_amount, price=None, style=None):
     :param style: 下单类型, 默认是市价单。目前支持的订单类型有 :class:`~LimitOrder` 和 :class:`~MarketOrder`
     :type style: `OrderStyle` object
 
-    :return: :class:`~Order` object
+    :return: :class:`~Order` object | None
 
     :example:
 
     .. code-block:: python
 
-        #如果现在的投资组合中持有价值￥3000的平安银行股票的仓位并且设置其目标价值为￥10000，以下代码范例会发送价值￥7000的平安银行的买单到市场。（向下调整到最接近每手股数即100的倍数的股数）：
+        #如果现在的投资组合中持有价值￥3000的平安银行股票的仓位，以下代码范例会发送花费 ￥7000 现金的平安银行买单到市场。（向下调整到最接近每手股数即100的倍数的股数）：
         order_target_value('000001.XSHE', 10000)
     """
     order_book_id = assure_stock_order_book_id(id_or_ins)
@@ -334,24 +382,32 @@ def order_target_value(id_or_ins, cash_amount, price=None, style=None):
 
     style = cal_style(price, style)
     if cash_amount == 0:
-        return _sell_all_stock(order_book_id, position.quantity, style)
+        return _sell_all_stock(order_book_id, position.sellable, style)
 
-    return order_value(order_book_id, cash_amount - position.market_value, style=style)
+    try:
+        market_value = position.market_value
+    except RuntimeError:
+        order_result = order_value(order_book_id, np.nan, style=style)
+        if order_result:
+            raise
+    else:
+        return order_value(order_book_id, cash_amount - market_value, style=style)
 
 
 @export_as_api
 @ExecutionContext.enforce_phase(EXECUTION_PHASE.ON_BAR,
                                 EXECUTION_PHASE.ON_TICK,
-                                EXECUTION_PHASE.SCHEDULED)
+                                EXECUTION_PHASE.SCHEDULED,
+                                EXECUTION_PHASE.GLOBAL)
 @apply_rules(verify_that('id_or_ins').is_valid_stock(),
              verify_that('percent').is_number().is_greater_or_equal_than(0).is_less_or_equal_than(1),
              verify_that('style').is_instance_of((MarketOrder, LimitOrder, type(None))))
 def order_target_percent(id_or_ins, percent, price=None, style=None):
     """
-    买入/卖出证券以自动调整该证券的仓位到占有一个指定的投资组合的目标百分比。
+    买入/卖出证券以自动调整该证券的仓位到占有一个目标价值。
 
-    *   如果投资组合中没有任何该证券的仓位，那么会买入等于现在投资组合总价值的目标百分比的数目的证券。
-    *   如果投资组合中已经拥有该证券的仓位，那么会买入/卖出目标百分比和现有百分比的差额数目的证券，最终调整该证券的仓位占据投资组合的比例至目标百分比。
+    加仓时，percent 代表证券已有持仓的价值加上即将花费的现金（包含税费）的总值占当前投资组合总价值的比例。
+    减仓时，percent 代表证券将被调整到的目标价至占当前投资组合总价值的比例。
 
     其实我们需要计算一个position_to_adjust (即应该调整的仓位)
 
@@ -371,13 +427,13 @@ def order_target_percent(id_or_ins, percent, price=None, style=None):
     :param style: 下单类型, 默认是市价单。目前支持的订单类型有 :class:`~LimitOrder` 和 :class:`~MarketOrder`
     :type style: `OrderStyle` object
 
-    :return: :class:`~Order` object
+    :return: :class:`~Order` object | None
 
     :example:
 
     .. code-block:: python
 
-        #如果投资组合中已经有了平安银行股票的仓位，并且占据目前投资组合的10%的价值，那么以下代码会买入平安银行股票最终使其占据投资组合价值的15%：
+        #如果投资组合中已经有了平安银行股票的仓位，并且占据目前投资组合的10%的价值，那么以下代码会消耗相当于当前投资组合价值5%的现金买入平安银行股票：
         order_target_percent('000001.XSHE', 0.15)
     """
     if percent < 0 or percent > 1:
@@ -390,9 +446,16 @@ def order_target_percent(id_or_ins, percent, price=None, style=None):
     position = account.positions[order_book_id]
 
     if percent == 0:
-        return _sell_all_stock(order_book_id, position.quantity, style)
+        return _sell_all_stock(order_book_id, position.sellable, style)
 
-    return order_value(order_book_id, account.total_value * percent - position.market_value, style=style)
+    try:
+        market_value = position.market_value
+    except RuntimeError:
+        order_result = order_value(order_book_id, np.nan, style=style)
+        if order_result:
+            raise
+    else:
+        return order_value(order_book_id, account.total_value * percent - market_value, style=style)
 
 
 @export_as_api
@@ -446,17 +509,7 @@ def is_st_stock(order_book_id, count=1):
 
 def assure_stock_order_book_id(id_or_symbols):
     if isinstance(id_or_symbols, Instrument):
-        order_book_id = id_or_symbols.order_book_id
-        """
-        这所以使用XSHG和XSHE来判断是否可交易是因为股票类型策略支持很多种交易类型，比如CS, ETF, LOF, FenjiMU, FenjiA, FenjiB,
-        INDX等，但实际其中部分由不能交易，所以不能直接按照类型区分该合约是否可以交易。而直接通过判断其后缀可以比较好的区分是否可以进行交易
-        """
-        if "XSHG" in order_book_id or "XSHE" in order_book_id or "INDX" in order_book_id:
-            return order_book_id
-        else:
-            raise RQInvalidArgument(
-                _(u"{order_book_id} is not supported in current strategy type").format(
-                    order_book_id=order_book_id))
+        return id_or_symbols.order_book_id
     elif isinstance(id_or_symbols, six.string_types):
         return assure_stock_order_book_id(instruments(id_or_symbols))
     else:

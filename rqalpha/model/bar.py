@@ -1,30 +1,28 @@
 # -*- coding: utf-8 -*-
+# 版权所有 2019 深圳米筐科技有限公司（下称“米筐科技”）
 #
-# Copyright 2017 Ricequant, Inc
+# 除非遵守当前许可，否则不得使用本软件。
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+#     * 非商业用途（非商业用途指个人出于非商业目的使用本软件，或者高校、研究所等非营利机构出于教育、科研等目的使用本软件）：
+#         遵守 Apache License 2.0（下称“Apache 2.0 许可”），您可以在以下位置获得 Apache 2.0 许可的副本：http://www.apache.org/licenses/LICENSE-2.0。
+#         除非法律有要求或以书面形式达成协议，否则本软件分发时需保持当前许可“原样”不变，且不得附加任何条件。
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+#     * 商业用途（商业用途指个人出于任何商业目的使用本软件，或者法人或其他组织出于任何目的使用本软件）：
+#         未经米筐科技授权，任何个人不得出于任何商业目的使用本软件（包括但不限于向第三方提供、销售、出租、出借、转让本软件、本软件的衍生产品、引用或借鉴了本软件功能或源代码的产品或服务），任何法人或其他组织不得出于任何目的使用本软件，否则米筐科技有权追究相应的知识产权侵权责任。
+#         在此前提下，对本软件的使用同样需要遵守 Apache 2.0 许可，Apache 2.0 许可与本许可冲突之处，以本许可为准。
+#         详细的授权流程，请联系 public@ricequant.com 获取。
 
 import six
 import numpy as np
 
-from ..execution_context import ExecutionContext
-from ..environment import Environment
-from ..const import RUN_TYPE
-from ..utils.datetime_func import convert_int_to_datetime
-from ..utils.i18n import gettext as _
-from ..utils.logger import system_log
-from ..utils.exception import patch_user_exc
-from ..const import EXECUTION_PHASE, BAR_STATUS
+from rqalpha.execution_context import ExecutionContext
+from rqalpha.environment import Environment
+from rqalpha.const import RUN_TYPE
+from rqalpha.utils.datetime_func import convert_int_to_datetime
+from rqalpha.utils.i18n import gettext as _
+from rqalpha.utils.logger import system_log
+from rqalpha.utils.exception import patch_user_exc
+from rqalpha.const import EXECUTION_PHASE, BAR_STATUS
 
 
 NAMES = ['open', 'close', 'low', 'high', 'settlement', 'limit_up', 'limit_down', 'volume', 'total_turnover',
@@ -49,30 +47,36 @@ class BarObject(object):
     @property
     def open(self):
         """
-        [float] 当日开盘价
+        [float] 开盘价
         """
         return self._data["open"]
 
     @property
     def close(self):
+        """
+        [float] 收盘价
+        """
         return self._data["close"]
 
     @property
     def low(self):
         """
-        [float] 截止到当前的最低价
+        [float] 最低价
         """
         return self._data["low"]
 
     @property
     def high(self):
         """
-        [float] 截止到当前的最高价
+        [float] 最高价
         """
         return self._data["high"]
 
     @property
     def limit_up(self):
+        """
+        [float] 涨停价
+        """
         try:
             v = self._data['limit_up']
             return v if v != 0 else np.nan
@@ -81,6 +85,9 @@ class BarObject(object):
 
     @property
     def limit_down(self):
+        """
+        [float] 跌停价
+        """
         try:
             v = self._data['limit_down']
             return v if v != 0 else np.nan
@@ -90,7 +97,7 @@ class BarObject(object):
     @property
     def prev_close(self):
         """
-        [float] 截止到当前的最低价
+        [float] 昨日收盘价
         """
         try:
             return self._data['prev_close']
@@ -174,6 +181,9 @@ class BarObject(object):
 
     @property
     def settlement(self):
+        """
+        [float] 结算价（期货专用）
+        """
         return self._data['settlement']
 
     @property
@@ -201,6 +211,9 @@ class BarObject(object):
 
     @property
     def datetime(self):
+        """
+        [datetime.datetime] 时间戳
+        """
         if self._dt is not None:
             return self._dt
         return convert_int_to_datetime(self._data['datetime'])
@@ -226,7 +239,7 @@ class BarObject(object):
     @property
     def is_trading(self):
         """
-        [datetime.datetime] 时间戳
+        [bool] 是否有成交量
         """
         return self._data['volume'] > 0
 
@@ -339,6 +352,8 @@ class BarMap(object):
             return self._cache[order_book_id]
         except KeyError:
             try:
+                if not self._dt:
+                    return BarObject(instrument, NANDict, self._dt)
                 bar = self._data_proxy.get_bar(order_book_id, self._dt, self._frequency)
             except Exception as e:
                 system_log.exception(e)

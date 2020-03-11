@@ -1,118 +1,92 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
+# 版权所有 2019 深圳米筐科技有限公司（下称“米筐科技”）
 #
-# Copyright 2017 Ricequant, Inc
+# 除非遵守当前许可，否则不得使用本软件。
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+#     * 非商业用途（非商业用途指个人出于非商业目的使用本软件，或者高校、研究所等非营利机构出于教育、科研等目的使用本软件）：
+#         遵守 Apache License 2.0（下称“Apache 2.0 许可”），您可以在以下位置获得 Apache 2.0 许可的副本：http://www.apache.org/licenses/LICENSE-2.0。
+#         除非法律有要求或以书面形式达成协议，否则本软件分发时需保持当前许可“原样”不变，且不得附加任何条件。
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-from .test_api_base import get_code_block
+#     * 商业用途（商业用途指个人出于任何商业目的使用本软件，或者法人或其他组织出于任何目的使用本软件）：
+#         未经米筐科技授权，任何个人不得出于任何商业目的使用本软件（包括但不限于向第三方提供、销售、出租、出借、转让本软件、本软件的衍生产品、引用或借鉴了本软件功能或源代码的产品或服务），任何法人或其他组织不得出于任何目的使用本软件，否则米筐科技有权追究相应的知识产权侵权责任。
+#         在此前提下，对本软件的使用同样需要遵守 Apache 2.0 许可，Apache 2.0 许可与本许可冲突之处，以本许可为准。
+#         详细的授权流程，请联系 public@ricequant.com 获取。
 
 
+from ..utils import make_test_strategy_decorator, assert_order
+
+test_strategies = []
+
+as_test_strategy = make_test_strategy_decorator({
+        "base": {
+            "start_date": "2016-03-07",
+            "end_date": "2016-03-08",
+            "frequency": "1d",
+            "accounts": {
+                "future": 10000000000
+            }
+        },
+        "extra": {
+            "log_level": "error",
+        },
+        "mod": {
+            "sys_progress": {
+                "enabled": True,
+                "show": True,
+            },
+        },
+    }, test_strategies)
+
+
+@as_test_strategy()
 def test_buy_open():
-    from rqalpha.api import buy_open, subscribe, ORDER_STATUS, POSITION_EFFECT, SIDE
-
     def init(context):
         context.f1 = 'P88'
-        context.amount = 1
-        # context.marin_rate = 10
         subscribe(context.f1)
-        context.order_count = 0
-        context.order = None
 
-    def handle_bar(context, bar_dict):
-        order = buy_open(context.f1, 1)
-
-        assert order.order_book_id == context.f1, 'Order_book_id is wrong'
-        assert order.quantity == 1, 'order.quantity is wrong'
-        assert order.status == ORDER_STATUS.FILLED, 'order.status is wrong'
-        assert order.unfilled_quantity == 0, 'order.unfilled_quantity is wrong'
-        assert order.unfilled_quantity + order.filled_quantity == order.quantity, 'order.unfilled_quantity is wrong'
-        assert order.side == SIDE.BUY, 'order.side is wrong'
-        assert order.position_effect == POSITION_EFFECT.OPEN, 'order.position_effect is wrong'
-test_buy_open_code_new = get_code_block(test_buy_open)
+    def handle_bar(context, _):
+        o = buy_open(context.f1, 1)
+        assert_order(
+            o, order_book_id=context.f1, quantity=1, status=ORDER_STATUS.FILLED, side=SIDE.BUY, position_effect=POSITION_EFFECT.OPEN
+        )
+    return init, handle_bar
 
 
+@as_test_strategy()
 def test_sell_open():
-    from rqalpha.api import sell_open, subscribe, ORDER_STATUS, POSITION_EFFECT, SIDE
-
     def init(context):
         context.f1 = 'P88'
-        context.amount = 1
-        # context.marin_rate = 10
         subscribe(context.f1)
-        context.order_count = 0
-        context.order = None
 
-    def handle_bar(context, bar_dict):
-        order = sell_open(context.f1, 1)
-
-        assert order.order_book_id == context.f1, 'Order_book_id is wrong'
-        assert order.quantity == 1, 'order.quantity is wrong'
-        assert order.status == ORDER_STATUS.FILLED, 'order.status is wrong'
-        assert order.unfilled_quantity == 0, 'order.unfilled_quantity is wrong'
-        assert order.unfilled_quantity + order.filled_quantity == order.quantity, 'order.unfilled_quantity is wrong'
-        assert order.side == SIDE.SELL, 'order.side is wrong'
-        assert order.position_effect == POSITION_EFFECT.OPEN, 'order.position_effect is wrong'
-test_sell_open_code_new = get_code_block(test_sell_open)
+    def handle_bar(context, _):
+        o = sell_open(context.f1, 1)
+        assert_order(
+            o, order_book_id=context.f1, quantity=1, status=ORDER_STATUS.FILLED, side=SIDE.SELL, position_effect=POSITION_EFFECT.OPEN
+        )
+    return init, handle_bar
 
 
+@as_test_strategy()
 def test_buy_close():
-    from rqalpha.api import buy_close, subscribe, ORDER_STATUS, POSITION_EFFECT, SIDE
-
     def init(context):
         context.f1 = 'P88'
-        context.amount = 1
-        # context.marin_rate = 10
         subscribe(context.f1)
-        context.order_count = 0
-        context.order = None
 
-    def handle_bar(context, bar_dict):
+    def handle_bar(context, _):
         orders = buy_close(context.f1, 1)
-        # TODO Add More Sell Close Test
+        # TODO: Add More Sell Close Test
         assert len(orders) == 0
-
-        # assert order.order_book_id == context.f1, 'Order_book_id is wrong'
-        # assert order.quantity == 1, 'order.quantity is wrong'
-        # assert order.status == ORDER_STATUS.REJECTED, 'order.status is wrong'
-        # assert order.unfilled_quantity == 1, 'order.unfilled_quantity is wrong'
-        # assert order.unfilled_quantity + order.filled_quantity == order.quantity, 'order.unfilled_quantity is wrong'
-        # assert order.side == SIDE.BUY, 'order.side is wrong'
-        # assert order.position_effect == POSITION_EFFECT.CLOSE, 'order.position_effect is wrong'
-test_buy_close_code_new = get_code_block(test_buy_close)
+    return init, handle_bar
 
 
+@as_test_strategy()
 def test_sell_close():
-    from rqalpha.api import sell_close, subscribe, ORDER_STATUS, POSITION_EFFECT, SIDE
-
     def init(context):
         context.f1 = 'P88'
-        context.amount = 1
-        # context.marin_rate = 10
         subscribe(context.f1)
-        context.order_count = 0
-        context.order = None
 
-    def handle_bar(context, bar_dict):
+    def handle_bar(context, _):
         orders = sell_close(context.f1, 1)
-        # TODO Add More Sell Close Test
+        # TODO: Add More Sell Close Test
         assert len(orders) == 0
-
-        # assert order.order_book_id == context.f1
-        # assert order.quantity == 1
-        # assert order.status == ORDER_STATUS.REJECTED
-        # assert order.unfilled_quantity == 1
-        # assert order.unfilled_quantity + order.filled_quantity == order.quantity
-        # assert order.side == SIDE.SELL
-        # assert order.position_effect == POSITION_EFFECT.CLOSE
-test_sell_close_code_new = get_code_block(test_sell_close)
+    return init, handle_bar

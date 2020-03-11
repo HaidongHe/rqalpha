@@ -1,35 +1,33 @@
 # -*- coding: utf-8 -*-
+# 版权所有 2019 深圳米筐科技有限公司（下称“米筐科技”）
 #
-# Copyright 2017 Ricequant, Inc
+# 除非遵守当前许可，否则不得使用本软件。
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+#     * 非商业用途（非商业用途指个人出于非商业目的使用本软件，或者高校、研究所等非营利机构出于教育、科研等目的使用本软件）：
+#         遵守 Apache License 2.0（下称“Apache 2.0 许可”），您可以在以下位置获得 Apache 2.0 许可的副本：http://www.apache.org/licenses/LICENSE-2.0。
+#         除非法律有要求或以书面形式达成协议，否则本软件分发时需保持当前许可“原样”不变，且不得附加任何条件。
 #
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+#     * 商业用途（商业用途指个人出于任何商业目的使用本软件，或者法人或其他组织出于任何目的使用本软件）：
+#         未经米筐科技授权，任何个人不得出于任何商业目的使用本软件（包括但不限于向第三方提供、销售、出租、出借、转让本软件、本软件的衍生产品、引用或借鉴了本软件功能或源代码的产品或服务），任何法人或其他组织不得出于任何目的使用本软件，否则米筐科技有权追究相应的知识产权侵权责任。
+#         在此前提下，对本软件的使用同样需要遵守 Apache 2.0 许可，Apache 2.0 许可与本许可冲突之处，以本许可为准。
+#         详细的授权流程，请联系 public@ricequant.com 获取。
+
 
 from collections import defaultdict
 
-import numpy as np
+from rqalpha.utils import is_valid_price
 from rqalpha.const import ORDER_TYPE, SIDE, MATCHING_TYPE
 from rqalpha.events import EVENT, Event
 from rqalpha.model.trade import Trade
+from rqalpha.utils import account_type_str2enum
 from rqalpha.utils.i18n import gettext as _
 
-from .decider import CommissionDecider, SlippageDecider, TaxDecider
+from .slippage import SlippageDecider
 
 
 class Matcher(object):
     def __init__(self, env, mod_config):
-        self._commission_decider = CommissionDecider(mod_config.commission_multiplier)
-        self._slippage_decider = SlippageDecider(mod_config.slippage)
-        self._tax_decider = TaxDecider()
+        self._slippage_decider = SlippageDecider(mod_config.slippage_model, mod_config.slippage)
         self._turnover = defaultdict(int)
         self._calendar_dt = None
         self._trading_dt = None
@@ -42,17 +40,33 @@ class Matcher(object):
 
     def _create_deal_price_decider(self, matching_type):
         decider_dict = {
-            MATCHING_TYPE.CURRENT_BAR_CLOSE: lambda order_book_id, side: self._env.bar_dict[order_book_id].close,
-            MATCHING_TYPE.NEXT_BAR_OPEN: lambda order_book_id, side: self._env.bar_dict[order_book_id].open,
-            MATCHING_TYPE.NEXT_TICK_LAST: lambda order_book_id, side: self._env.price_board.get_last_price(order_book_id),
-            MATCHING_TYPE.NEXT_TICK_BEST_OWN: lambda order_book_id, side: self._best_own_price_decider(order_book_id, side),
+            MATCHING_TYPE.CURRENT_BAR_CLOSE: self._current_bar_close_decider,
+            MATCHING_TYPE.NEXT_BAR_OPEN: self._next_bar_open_decider,
+            MATCHING_TYPE.NEXT_TICK_LAST: lambda order_book_id, side: self._env.price_board.get_last_price(
+                order_book_id),
+            MATCHING_TYPE.NEXT_TICK_BEST_OWN: lambda order_book_id, side: self._best_own_price_decider(order_book_id,
+                                                                                                       side),
             MATCHING_TYPE.NEXT_TICK_BEST_COUNTERPARTY: lambda order_book_id, side: (
-                self._env.price_board.get_a1(order_book_id) if side == SIDE.BUY else self._env.price_board.get_b1(order_book_id))
+                self._env.price_board.get_a1(order_book_id) if side == SIDE.BUY else self._env.price_board.get_b1(
+                    order_book_id))
         }
         return decider_dict[matching_type]
 
+    def _current_bar_close_decider(self, order_book_id, _):
+        try:
+            return self._env.bar_dict[order_book_id].close
+        except (KeyError, TypeError):
+            return 0
+
+    def _next_bar_open_decider(self, order_book_id, _):
+        try:
+            return self._env.bar_dict[order_book_id].open
+        except (KeyError, TypeError):
+            return 0
+
     def _best_own_price_decider(self, order_book_id, side):
-        price = self._env.price_board.get_b1(order_book_id) if side == SIDE.BUY else self._env.price_board.get_a1(order_book_id)
+        price = self._env.price_board.get_b1(order_book_id) if side == SIDE.BUY else self._env.price_board.get_a1(
+            order_book_id)
         if price == 0:
             price = self._env.price_board.get_last_price(order_book_id)
         return price
@@ -68,10 +82,12 @@ class Matcher(object):
             order_book_id = order.order_book_id
             instrument = self._env.get_instrument(order_book_id)
 
-            if np.isnan(price_board.get_last_price(order_book_id)):
+            deal_price = self._deal_price_decider(order_book_id, order.side)
+            if not is_valid_price(deal_price):
                 listed_date = instrument.listed_date.date()
                 if listed_date == self._trading_dt.date():
-                    reason = _(u"Order Cancelled: current security [{order_book_id}] can not be traded in listed date [{listed_date}]").format(
+                    reason = _(
+                        u"Order Cancelled: current security [{order_book_id}] can not be traded in listed date [{listed_date}]").format(
                         order_book_id=order.order_book_id,
                         listed_date=listed_date,
                     )
@@ -81,7 +97,6 @@ class Matcher(object):
                 order.mark_rejected(reason)
                 continue
 
-            deal_price = self._deal_price_decider(order_book_id, order.side)
             if order.type == ORDER_TYPE.LIMIT:
                 if order.side == SIDE.BUY and order.price < deal_price:
                     continue
@@ -147,7 +162,8 @@ class Matcher(object):
                 fill = order.unfilled_quantity
 
             ct_amount = account.positions.get_or_create(order.order_book_id).cal_close_today_amount(fill, order.side)
-            price = self._slippage_decider.get_trade_price(order.side, deal_price)
+            price = self._slippage_decider.get_trade_price(order, deal_price)
+
             trade = Trade.__from_create__(
                 order_id=order.order_id,
                 price=price,
@@ -158,8 +174,8 @@ class Matcher(object):
                 frozen_price=order.frozen_price,
                 close_today_amount=ct_amount
             )
-            trade._commission = self._commission_decider.get_commission(account.type, trade)
-            trade._tax = self._tax_decider.get_tax(account.type, trade)
+            trade._commission = self._env.get_trade_commission(account_type_str2enum(account.type), trade)
+            trade._tax = self._env.get_trade_tax(account_type_str2enum(account.type), trade)
             order.fill(trade)
             self._turnover[order.order_book_id] += fill
 
@@ -168,10 +184,11 @@ class Matcher(object):
             if order.type == ORDER_TYPE.MARKET and order.unfilled_quantity != 0:
                 reason = _(
                     u"Order Cancelled: market order {order_book_id} volume {order_volume} is"
-                    u" larger than 25 percent of current bar volume, fill {filled_volume} actually"
+                    u" larger than {volume_percent_limit} percent of current bar volume, fill {filled_volume} actually"
                 ).format(
                     order_book_id=order.order_book_id,
                     order_volume=order.quantity,
-                    filled_volume=order.filled_quantity
+                    filled_volume=order.filled_quantity,
+                    volume_percent_limit=self._volume_percent * 100.0
                 )
                 order.mark_cancelled(reason)
